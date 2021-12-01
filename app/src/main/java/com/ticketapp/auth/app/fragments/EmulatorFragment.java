@@ -27,6 +27,8 @@ public class EmulatorFragment extends Fragment {
     private static Ticket ticket;
 
     private static TextView ticket_info;
+    private static final int TICKET_USES = 10;
+    private static final int DAYS_VALID = 30;
 
     private Button btn_issue;
     private Button btn_validate;
@@ -73,7 +75,7 @@ public class EmulatorFragment extends Fragment {
     public void issue() {
         if (active && Reader.connect()) {
             try {
-                ticket.issue(30, 10);
+                ticket.issue(DAYS_VALID, TICKET_USES);
                 ticket_info.setText(Ticket.getInfoToShow());
             } catch (Exception e) {
                 e.printStackTrace();

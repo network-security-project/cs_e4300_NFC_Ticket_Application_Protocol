@@ -33,9 +33,9 @@ public class Ticket {
     private static Utilities utils;
     private static Commands ul;
 
-    private final Boolean isValid = false;
-    private final int remainingUses = 0;
-    private final int expiryTime = 0;
+    private Boolean isValid = false;
+    private int remainingUses = 0;
+    private int expiryTime = 0;
 
     private static String infoToShow = "-"; // Use this to show messages
 
@@ -49,6 +49,12 @@ public class Ticket {
 
         ul = new Commands();
         utils = new Utilities(ul);
+    }
+
+    public static void validateTicket(Ticket ticket) {
+        ticket.isValid = true;
+        ticket.remainingUses = 1;
+        ticket.expiryTime = 1;
     }
 
     /**
@@ -97,19 +103,29 @@ public class Ticket {
 
         // Example of writing:
 
-        byte[] message = new byte[4];
-        message[0] = (byte) -1;
-        message[1] = (byte) 0;
-        message[2] = (byte) 0;
-        message[3] = (byte) 0;
-        res = utils.writePages(message, 0, 41, 1);
+        byte[] message = "SLMD".getBytes();
+        res = utils.writePages(message, 0, 15, 1);
+        System.out.println(res);
+        res = utils.writePages(message, 0, 16, 1);
+        System.out.println(res);
+
+        res = utils.writePages(message, 0, 17, 1);
+        System.out.println(res);
+
+        res = utils.writePages(message, 0, 18, 1);
+        System.out.println(res);
+
+        res = utils.writePages(message, 0, 19, 1);
+        System.out.println(res);
+
+        res = utils.writePages(message, 0, 26, 1);
+        System.out.println(res);
 
         // Set information to show for the user
         if (res) {
             infoToShow = "Wrote: " + new String(message);
         } else {
             infoToShow = "Failed to write";
-            System.out.println(res);
         }
 
         return true;
@@ -124,13 +140,16 @@ public class Ticket {
         boolean res;
 
         // Authenticate
-
         res = utils.authenticate(authenticationKey);
         if (!res) {
             Utilities.log("Authentication failed in issue()", true);
             infoToShow = "Authentication failed";
             return false;
         }
+
+        //Validate
+        Ticket.validateTicket(this);
+
 
         // Example of reading:
         byte[] message = new byte[4];
