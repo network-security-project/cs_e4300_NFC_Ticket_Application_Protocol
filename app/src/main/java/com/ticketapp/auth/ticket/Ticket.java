@@ -6,6 +6,7 @@ import com.ticketapp.auth.app.ulctools.Commands;
 import com.ticketapp.auth.app.ulctools.Utilities;
 
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.security.GeneralSecurityException;
 
 /**
@@ -34,6 +35,18 @@ public class Ticket {
     private Boolean isValid = false;
     private int remainingUses = 0;
     private int expiryTime = 0;
+
+    /*
+    * MEMORY LAYOUT
+    */
+    private static final int PAGE_APP_TAG = 4; // size == 2 pages
+    private static final int APP_TAG_SIZE = 2; // string of 8 bytes
+    private static final int PAGE_ISSUING_TS = 6;
+    private static final int PAGE_RIDE_COUNTER = 7;
+    private static final int PAGE_ACTIVATION_TS = 8;
+    private static final int PAGE_MAC = 39;
+    private static final int PAGE_COUNTER = 41; // size == 2B
+    private static final int PAGE_AUTH_KEY = 44; // size == 4 pages
 
     /*
     SAFE LIMITS
@@ -69,9 +82,43 @@ public class Ticket {
     Processes counter byte array stored on card to read it correctly (only first 2 bytes big endian).
     Returns int
      */
-    public static int counterFromArray(byte[] counterRead) {
-        byte[] toReturn = {0x00, 0x00, counterRead[1], counterRead[0]};
-        return ByteBuffer.wrap(toReturn).getInt();
+    public static int parseCounter(byte[] counterRead) {
+        return ByteBuffer.wrap(counterRead).order(ByteOrder.LITTLE_ENDIAN).getInt();
+    }
+
+    /*
+    * Helper for int -> byte array
+    * */
+    public static byte[] intToByteArray(int number) {
+        return ByteBuffer.allocate(Integer.SIZE/8).putInt(number).array();
+    }
+
+    /*
+    * Helper for byte array -> int
+    * Little endian order needed because counter is stored
+    * */
+    public static int byteArrayToInt(byte[] array, boolean counter) {
+        if (counter) return ByteBuffer.wrap(array).order(ByteOrder.LITTLE_ENDIAN).getInt();
+        else return ByteBuffer.wrap(array).getInt();
+    }
+
+    public static String generateAuthKey(byte[] uid, byte[] masterSecret) {
+        //TODO: produce key by concat and then hash
+        return "";
+    }
+
+    /*
+    * If card is blank, initialize with current app tag, new key, auth settings
+    * */
+    public static void initCard() {
+
+        // app tag
+        byte[] buff = CURRENT_APP_VERSION.getBytes();
+        utils.writePages(buff, 0, PAGE_APP_TAG, APP_TAG_SIZE);
+
+        // new key
+        // TODO: update this to write actual dynamic (UID) key and not master secret
+        utils.writePages(AUTHENTICATION_KEY, 0, PAGE_AUTH_KEY, 4);
     }
 
     /**
@@ -113,7 +160,7 @@ public class Ticket {
      * 3. If all go, write new ticket
      */
     public boolean issue(int daysValid, int uses) throws GeneralSecurityException {
-        boolean res;
+        boolean res = false;
 
         // read app tag and check for current version
         byte[] read = new byte[8];
@@ -130,23 +177,29 @@ public class Ticket {
 
                 // check for reasonable number of rides
                 read = new byte[4];
-                utils.readPages(41, 1, read, 0);
-                int currentCounter = counterFromArray(read);
+                utils.readPages(PAGE_COUNTER, 1, read, 0);
+                int currentCounter = parseCounter(read);
 
                 // read number of rides bought
                 read = new byte[4];
-                utils.readPages(0,1, read, 0);
-                // int ridesAvailable = counterFromArray() // or parse  || update function?
+                utils.readPages(PAGE_RIDE_COUNTER,1, read, 0);
+                int ridesLimit = byteArrayToInt(read, false);
+
+                //if ((ridesLimit - currentCounter) >  )
 
                 // check number of rides left is valid && that there's enough counter for more
+                // but do i separate new issuing and top up?
 
                 infoToShow = "Ticket Issued";
             }
 
         } else if (appTag.trim().equals("")){
-            // initialize
+
+            // assuming empty card, initialize
+            // can i init and make recursive call?
 
         } else {
+
             // app tag is different, reject or update?
         }
 
@@ -161,16 +214,9 @@ public class Ticket {
 */
 
 
-
-        // Example of writing:
-
-        byte[] message = "SLMD".getBytes();
-        res = utils.writePages(message, 0, 15, 1);
-        System.out.println(res);
-
         // Set information to show for the user
         if (res) {
-            infoToShow = "Wrote: " + new String(message);
+            infoToShow = "Wrote: ";
         } else {
             infoToShow = "Failed to write";
         }
@@ -187,24 +233,31 @@ public class Ticket {
         boolean res;
 
         // Authenticate
-        res = utils.authenticate(AUTHENTICATION_KEY);
+        res = utils.authenticate(DEFAULT_AUTHENTICATION_KEY);
         if (!res) {
             Utilities.log("Authentication failed in issue()", true);
             infoToShow = "Authentication failed";
             return false;
         }
 
+        // testing writing numbers
+        byte[] buff = ByteBuffer.allocate(Integer.SIZE/8).putInt(447576).order(ByteOrder.BIG_ENDIAN).array();
+        res = utils.writePages(buff, 0, 8, 1);
+
+        /*
+        byte[] buff = new byte[4];
+        res = utils.readPages(41, 1, buff, 0);
+        */
+
+        System.out.println("#######    read: " + res);
+
         //Validate
-        Ticket.validateTicket(this);
+//        Ticket.validateTicket(this);
 
-
-        // Example of reading:
-        byte[] message = new byte[4];
-        res = utils.readPages(11, 1, message, 0);
 
         // Set information to show for the user
         if (res) {
-            infoToShow = "Read: " + new String(message);
+            infoToShow = "Read: ";
         } else {
             infoToShow = "Failed to read";
         }
