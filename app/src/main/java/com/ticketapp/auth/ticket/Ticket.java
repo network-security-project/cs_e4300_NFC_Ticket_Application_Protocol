@@ -10,6 +10,8 @@ import java.nio.ByteOrder;
 import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Arrays;
+import java.util.Date;
 
 /**
  * TODO:
@@ -39,25 +41,26 @@ public class Ticket {
     private int expiryTime = 0;
 
     /*
-    * MEMORY LAYOUT
-    * sizes are in number of pages except where specified
-    */
+     * MEMORY LAYOUT
+     * sizes are in number of pages except where specified
+     */
     private static final int PAGE_APP_TAG = 4; // size == 2 pages
     private static final int APP_TAG_SIZE = 2; // 2 pages, string of 8 bytes
     private static final int PAGE_ISSUING_TS = 8;
     private static final int PAGE_RIDE_LIMIT_COUNTER = 6;
-    private static final int PAGE_ACTIVATION_TS = 10;
-    private static final int TS_SIZE = 2;  // epoch rounded to minutes = string of 8 bytes (2 pages)
+    private static final int PAGE_ACTIVATION_TS = 9;
+    private static final int TS_SIZE = 1;  // epoch rounded to minutes = int of 4 bytes (1 pages)
     private static final int PAGE_MAC = 39;
-    private static final int MAC_SIZE = 4;
+    private static final int MAC_SIZE = 1;
     private static final int PAGE_COUNTER = 41; // size == 2B
     private static final int PAGE_AUTH_KEY = 44;
     private static final int AUTH_KEY_SIZE = 4; // 4 pages, 16 bytes
     private static final int PAGE_UID = 0;
     private static final int UID_SIZE = 2;
+    private static final int COUNTER_SIZE = 1;
     private static final int PAGE_SIZE = 4; // page size is 4 bytes
     private static final int PAGE_COUNTER_LAST_VALUE = 7;
-    private static final byte[] ZERO_TS = "00000000".getBytes(); // used to reset activation ts
+    private static final int ZERO_TS = 0; // used to reset activation ts
     private static final int PAGE_AUTH0 = 42;
     private static final int PAGE_AUTH1 = 43;
     private static final int AUTH0_START_ADDRESS = 6; // r/w protect memory leaving app tag readable
@@ -95,39 +98,40 @@ public class Ticket {
     }
 
     /*
-    * Helper for byte array -> int
-    * Every number, counter included, is little endian in memory
-    * */
+     * Helper for byte array -> int
+     * Every number, counter included, is little endian in memory
+     * */
     public static int byteArrayToInt(byte[] counterRead) {
         return ByteBuffer.wrap(counterRead).order(ByteOrder.LITTLE_ENDIAN).getInt();
     }
 
     /*
-    * Helper for int -> byte array
-    * By using this function only we are writing every number in little endian
-    * */
+     * Helper for int -> byte array
+     * By using this function only we are writing every number in little endian
+     * */
     public static byte[] intToByteArray(int number) {
-        return ByteBuffer.allocate(Integer.SIZE/8).order(ByteOrder.LITTLE_ENDIAN).putInt(number).array();
+        return ByteBuffer.allocate(Integer.SIZE / 8).order(ByteOrder.LITTLE_ENDIAN).putInt(number).array();
     }
 
     /**
      * Helper function for extracting UID from read buffer of 8 byte
-     * */
+     */
     public static byte[] getUID(byte[] array) {
         return new byte[]{array[0], array[1], array[2], array[4], array[5], array[6], array[7]};
     }
 
     /**
-    * Generate unique authentication key by hashing ( uid | secret )
-    * @param uid card's UID
-    * @param masterSecret common master secret
-    * @return byte array of generated key of size 256bits = 16bytes
-    */
+     * Generate unique authentication key by hashing ( uid | secret )
+     *
+     * @param uid          card's UID
+     * @param masterSecret common master secret
+     * @return byte array of generated key of size 256bits = 16bytes
+     */
     public static byte[] generateAuthKey(byte[] uid, byte[] masterSecret) {
 
         byte[] data = new byte[uid.length + masterSecret.length];
         System.arraycopy(uid, 0, data, 0, uid.length);
-        System.arraycopy(masterSecret,0, data, uid.length, masterSecret.length);
+        System.arraycopy(masterSecret, 0, data, uid.length, masterSecret.length);
         byte[] key = null;
 
         try {
@@ -141,32 +145,32 @@ public class Ticket {
         return key;
     }
 
+    public static byte[] concatAll(byte[] first, byte[]... rest) {
+        int totalLength = first.length;
+        for (byte[] array : rest) {
+            totalLength += array.length;
+        }
+        byte[] result = Arrays.copyOf(first, totalLength);
+        int offset = first.length;
+        for (byte[] array : rest) {
+            System.arraycopy(array, 0, result, offset, array.length);
+            offset += array.length;
+        }
+        return result;
+    }
+
     /**
-    * If card is blank, initialize with current app tag, new key, auth settings
-    */
-    public static boolean initCard() {
-        boolean res = false;
-
-        // app tag
-        byte[] buff = CURRENT_APP_VERSION.getBytes();
-        res = utils.writePages(buff, 0, PAGE_APP_TAG, APP_TAG_SIZE);
-
-        // uid
-        byte[] uid = new byte[8];
-        res = res && utils.readPages(PAGE_UID, UID_SIZE, buff, 0);
-
-        // new key
-        byte[] authKey = generateAuthKey(getUID(uid), MASTER_SECRET);
-        res = res && utils.authenticate(DEFAULT_AUTHENTICATION_KEY);
-        res = res && utils.writePages(authKey, 0, PAGE_AUTH_KEY, AUTH_KEY_SIZE);
-
-        /*
-        // lock read/write page with auth bits
-        utils.writePages(intToByteArray(AUTH0_START_ADDRESS), 0, PAGE_AUTH0, 1);
-        utils.writePages(intToByteArray(AUTH1_MODE), 0, PAGE_AUTH1, 1);
-        */
-
-        return res;
+     * If card is blank, initialize with current app tag, new key, auth settings
+     */
+    public static byte[] generateCommonData(int currentValue, int counterLimit, int uses) {
+        int issueTS = (int) ((new Date()).getTime() / 1000 / 60);
+        return concatAll(
+                CURRENT_APP_VERSION.getBytes(),
+                intToByteArray(counterLimit + uses),
+                intToByteArray(currentValue),
+                intToByteArray(issueTS),
+                intToByteArray(ZERO_TS)
+        );
     }
 
     /**
@@ -199,15 +203,15 @@ public class Ticket {
 
     /**
      * Issue new tickets
-     *
+     * <p>
      * 1. Check for app tag, if present, authenticate with unique key and write
-     *    if different, reject card
-     *    if not present, initialize (write new key)
+     * if different, reject card
+     * if not present, initialize (write new key)
      * 2. Check safe limits
      * 3. On first issue, activation date should be blank;
-     *    if topping up rides, activation should be reset to 0 so
-     *    that in use() we can use the field to understand whether the ticket
-     *    is to be activated or already in use
+     * if topping up rides, activation should be reset to 0 so
+     * that in use() we can use the field to understand whether the ticket
+     * is to be activated or already in use
      * 4. update issuing timestamp
      * 5. MAC info
      */
@@ -226,89 +230,61 @@ public class Ticket {
             Utilities.log("[?] Found foreign card, stopping issuing...", true);
             throw new GeneralSecurityException("Unrecognized card supplied!");
 
-        } else if (appTag.trim().equals("")) {
-            // card's a new one, init and continue
-
-            if (!initCard()) {
-                Utilities.log("[!] Initialization of new card failed", true);
-                throw new GeneralSecurityException("Failed to initialize new card.");
-            }
-
         }
 
-        // proceed to issuing
+        // read uid and generate unique authentication key
         byte[] uid = new byte[UID_SIZE * PAGE_SIZE];
         utils.readPages(PAGE_UID, UID_SIZE, uid, 0);
         byte[] key = generateAuthKey(uid, MASTER_SECRET);
+        int currentCounter = 0;
+        int currentLimit = 0;
 
-        res = utils.authenticate(key);
+        if (appTag.trim().equals("")) {
+            // card's a new one, init counter and key and continue
+            res = utils.writePages(intToByteArray(0), 0, PAGE_COUNTER, COUNTER_SIZE);
+            res = res && utils.writePages(key, 0, PAGE_AUTH_KEY, AUTH_KEY_SIZE);
+        } else {
+            // reused card, authenticate
+            boolean authResult = utils.authenticate(key);
 
-        if (res) {
-
-            boolean success;
-            Utilities.log("[+] Authentication succeeded in issue().\n [+] Issuing ticket...", false);
-
-            // check for reasonable number of rides
-            read = new byte[4];
-            utils.readPages(PAGE_COUNTER, 1, read, 0);
-            int currentCounter = byteArrayToInt(read);
-
-            // read number of rides bought
-            read = new byte[4];
-            utils.readPages(PAGE_RIDE_LIMIT_COUNTER,1, read, 0);
-            int ridesLimitCounter = byteArrayToInt(read);
-
-            if (((MAX_COUNTER_VALUE - currentCounter) < MIN_RIDES_ALLOWED) &&
-                    ((ridesLimitCounter - currentCounter) >= MAX_RIDES_ALLOWED) &&
-                    ((ridesLimitCounter - currentCounter < 0))) {
-                // either card EOL or fishy number of rides available, reject
-                Utilities.log("Issuing rejected.", true);
-                throw new GeneralSecurityException("Issuing failed due to safe limits.");
+            if (!authResult) {
+                throw new GeneralSecurityException("Authentication fail!");
             }
 
-            // store backup of current counter
-            success = utils.writePages(intToByteArray(currentCounter), 0, PAGE_COUNTER_LAST_VALUE, 1);
+            // read current counter
+            byte[] buff = new byte[4];
+            utils.readPages(PAGE_COUNTER, COUNTER_SIZE, buff, 0);
+            currentCounter = byteArrayToInt(buff);
 
-            // write new limit counter target after incrementing with newly bought rides
-            int newRidesLimit = ridesLimitCounter + uses;
-            success = success && utils.writePages(intToByteArray(newRidesLimit), 0, PAGE_RIDE_LIMIT_COUNTER, 1);
+            // and read current limit
+            utils.readPages(PAGE_RIDE_LIMIT_COUNTER, COUNTER_SIZE, buff, 0);
+            currentLimit = byteArrayToInt(buff);
 
-            // reset activation date
-            success = success && utils.writePages(ZERO_TS, 0, PAGE_ACTIVATION_TS, TS_SIZE);
-
-            // commit issuing TS
-            String currentTime = String.valueOf(System.currentTimeMillis() / 1000 / 60); // round current time to minutes from epoch (8 bytes)
-            success = success && utils.writePages(currentTime.getBytes(), 0, PAGE_ISSUING_TS, TS_SIZE);
-
-            // MAC it up
-            // FORMAT for MAC input is: ( app_tag:limit_counter:last_counter:issue_ts:activation_ts )
-            String macData = CURRENT_APP_VERSION + ":" +
-                    String.valueOf(newRidesLimit) + ":" +
-                    String.valueOf(currentCounter) + ":" +
-                    currentTime +
-                    new String(ZERO_TS);
-
-            byte[] mac = macAlgorithm.generateMac(macData.getBytes());
-            success = success && utils.writePages(mac, 0, PAGE_MAC, MAC_SIZE);
-
-            if (success) {
-                infoToShow = "Ticket issued.";
-                return true;
+            if ((currentCounter + uses > MAX_COUNTER_VALUE) &&
+                    (currentLimit - currentCounter + uses < MAX_RIDES_ALLOWED)) {
+                Utilities.log("Safe limits exceeded, aborting...", true);
+                throw new GeneralSecurityException("Counter value exceeds! try New Card");
             }
-
-            Utilities.log("A write failed during the issuing, aborting...", true);
-            throw new GeneralSecurityException("Issuing failed");
-
         }
 
-        Utilities.log("Why am I even here?", true);
+        byte[] commonData = generateCommonData(currentCounter, currentLimit, uses);
+        byte[] mac = macAlgorithm.generateMac(commonData);
+        res = res && utils.writePages(mac, 0, PAGE_MAC, MAC_SIZE);
+//        utils.writePages(intToByteArray(AUTH0_START_ADDRESS), 0, PAGE_AUTH0, 1);
+//        utils.writePages(intToByteArray(AUTH1_MODE), 0, PAGE_AUTH1, 1);
+
+        if (res) {
+            infoToShow = "Ticket issued.";
+            return true;
+        }
+
         return false;
     }
 
 
     /**
      * Use ticket once
-     *
+     * <p>
      * TODO: IMPLEMENT
      */
     public boolean use() throws GeneralSecurityException {
@@ -316,20 +292,21 @@ public class Ticket {
 
         // Authenticate
         res = utils.authenticate(DEFAULT_AUTHENTICATION_KEY);
-        if (!res) {
-            Utilities.log("Authentication failed in issue()", true);
-            infoToShow = "Authentication failed";
-            return false;
-        }
+//        if (!res) {
+//            Utilities.log("Authentication failed in issue()", true);
+//            infoToShow = "Authentication failed";
+//            return false;
+//        }
+//
+//        System.out.println(res);
 
         // uid
-        byte[] buff = new byte[8];
-        res = utils.readPages(PAGE_UID, UID_SIZE, buff, 0);
-        byte[] uid = getUID(buff);
+//        byte[] buff = new byte[8];
+//        res = utils.writePages(DEFAULT_AUTHENTICATION_KEY, 0, PAGE_AUTH_KEY, AUTH_KEY_SIZE);
 
         // new key
-        byte[] authKey = generateAuthKey(getUID(buff), MASTER_SECRET);
-        res = utils.authenticate(authKey);
+//        byte[] authKey = generateAuthKey(getUID(buff), MASTER_SECRET);
+//        res = utils.authenticate(authKey);
 
         //Validate
 //        Ticket.validateTicket(this);
