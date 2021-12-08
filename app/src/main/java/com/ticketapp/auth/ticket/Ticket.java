@@ -30,7 +30,8 @@ public class Ticket {
     private static final byte[] HMAC_KEY = TicketActivity.outer.getString(R.string.hmac_key).getBytes();
 
 
-    public static byte[] data = new byte[192];
+    public static byte[] data = new byte[192]; //TODO shall we use?
+
 
     private static TicketMac macAlgorithm; // For computing HMAC over ticket data, as needed
     private static Utilities utils;
@@ -39,6 +40,9 @@ public class Ticket {
     private Boolean isValid = false;
     private int remainingUses = 0;
     private int expiryTime = 0;
+    private int currentCounter = 0;
+    private int limitCounter = 0;
+    private int pastCounter = 0;
 
     /*
      * MEMORY LAYOUT
@@ -76,6 +80,7 @@ public class Ticket {
     private static final String CURRENT_APP_VERSION = "NFC0.0.0";   // app tag
 
     private static String infoToShow = "-"; // Use this to show messages
+    private String failureReason = "-"; // Use this to show the user the reason of a possible failure
 
     /**
      * Create a new ticket
@@ -89,13 +94,27 @@ public class Ticket {
         utils = new Utilities(ul);
     }
 
+
+    private void serializeCommonData(byte[] commonData) {
+
+    }
+
     /*
      * Checks used in USE
      */
-    public static void validateTicket(Ticket ticket) {
-        ticket.isValid = true;
-        ticket.remainingUses = 1;
-        ticket.expiryTime = 1;
+    private void validateTicket(byte[] commonData, byte[] cardMAC) {
+        this.remainingUses = 1;
+        this.expiryTime = 1;
+
+        byte[] calculatedMAC = Arrays.copyOfRange(macAlgorithm.generateMac(commonData), 0,
+                MAC_SIZE * PAGE_SIZE);
+
+        if (Arrays.equals(calculatedMAC, cardMAC)) {
+            serializeCommonData(commonData);
+        } else {
+            this.isValid = false;
+            failureReason = "MAC mismatch";
+        }
     }
 
     /*
@@ -161,15 +180,41 @@ public class Ticket {
     /**
      * If card is blank, initialize with current app tag, new key, auth settings
      */
-    public static byte[] generateCommonData(int currentValue, int counterLimit, int uses) {
+    public static byte[] generateCommonData(int currentCounter, int counterLimit, int uses) {
         int issueTS = (int) ((new Date()).getTime() / 1000 / 60);
+        int newCounterLimit;
+
+        if (counterLimit < currentCounter) {
+            newCounterLimit = currentCounter + uses;
+        } else {
+            newCounterLimit = counterLimit + uses;
+        }
+
         return concatAll(
                 CURRENT_APP_VERSION.getBytes(),
-                intToByteArray(counterLimit + uses),
-                intToByteArray(currentValue),
+                intToByteArray(newCounterLimit),
+                intToByteArray(currentCounter),
                 intToByteArray(issueTS),
                 intToByteArray(ZERO_TS)
         );
+    }
+
+    private byte[] readCommonData() {
+        byte[] buff = new byte[COMMON_DATA_SIZE * PAGE_SIZE];
+        utils.readPages(PAGE_APP_TAG, COMMON_DATA_SIZE, buff, 0);
+        return buff;
+    }
+
+    private byte[] readUID() {
+        byte[] uid = new byte[UID_SIZE * PAGE_SIZE];
+        utils.readPages(PAGE_UID, UID_SIZE, uid, 0);
+        return getUID(uid);
+    }
+
+    private byte[] readMAC() {
+        byte[] mac = new byte[UID_SIZE * PAGE_SIZE];
+        utils.readPages(PAGE_MAC, MAC_SIZE, mac, 0);
+        return mac;
     }
 
     public static boolean resetAppTag() {
@@ -219,7 +264,7 @@ public class Ticket {
      * 5. MAC info
      */
     public boolean issue(int daysValid, int uses) throws GeneralSecurityException {
-        boolean res = false;
+        boolean res;
         boolean init = true;
         infoToShow = "Issuing failed.";
 
@@ -236,28 +281,23 @@ public class Ticket {
         }
 
         // read uid and generate unique authentication key
-        byte[] uid = new byte[UID_SIZE * PAGE_SIZE];
-        utils.readPages(PAGE_UID, UID_SIZE, uid, 0);
-        byte[] key = generateAuthKey(getUID(uid), MASTER_SECRET);
+        byte[] key = generateAuthKey(readUID(), MASTER_SECRET);
 
         int currentCounter = 0;
         int currentLimit = 0;
 
-        if (appTag.trim().equals("")) {
+        // read current counter
+        byte[] buff = new byte[4];
+        utils.readPages(PAGE_COUNTER, COUNTER_SIZE, buff, 0);
+        currentCounter = byteArrayToInt(buff);
+
+        if (currentCounter == 0) {
             // card's a new one, init counter, limit, key and continue
             // FOR SECURITY, WRITE CURRENT COUNTER VALUE TO LIMIT VALUE
-            byte[] buff = new byte[PAGE_SIZE * COUNTER_SIZE];
-            init = utils.readPages(PAGE_COUNTER, COUNTER_SIZE, buff, 0  );
-
-            /*
-            current counter gets init to 0 but if tag is to be initialized then the wrong value gets passed
-            to common data
-            on first init, counter value needs to be copied to limit value
-            if someone introduces a card with the correct app tag, then it passese the issue (but not the use)
-            * */
+            buff = new byte[PAGE_SIZE * COUNTER_SIZE];
+            init = utils.readPages(PAGE_COUNTER, COUNTER_SIZE, buff, 0);
 
             init = init && utils.writePages(intToByteArray(0), 0, PAGE_COUNTER, COUNTER_SIZE);
-//            init = init && utils.writePages(buff, 0, PAGE_RIDE_LIMIT_COUNTER, COUNTER_SIZE);
             init = init && utils.writePages(key, 0, PAGE_AUTH_KEY, AUTH_KEY_SIZE);
         } else {
             // reused card, authenticate
@@ -266,11 +306,6 @@ public class Ticket {
             if (!authResult) {
                 throw new GeneralSecurityException("Authentication failed!");
             }
-
-            // read current counter
-            byte[] buff = new byte[4];
-            utils.readPages(PAGE_COUNTER, COUNTER_SIZE, buff, 0);
-            currentCounter = byteArrayToInt(buff);
 
             // and read current limit
             utils.readPages(PAGE_RIDE_LIMIT_COUNTER, COUNTER_SIZE, buff, 0);
@@ -306,8 +341,58 @@ public class Ticket {
      * TODO: IMPLEMENT
      */
     public boolean use() throws GeneralSecurityException {
-        boolean res = false;
-/*
+        int currentTime = (int) ((new Date()).getTime() / 1000 / 60);
+        byte[] uid = readUID();
+
+        TicketSuccessfulReadHistory uidHistory = TicketSuccessfulReadHistory.
+                successfulReadHistoryList.get(uid);
+        if (uidHistory != null && !uidHistory.isExpired(currentTime)) {
+            infoToShow = "This ticket has been used in the past 5 minutes";
+            return false;
+        }
+
+        byte[] key = generateAuthKey(uid, MASTER_SECRET);
+        boolean authResult = utils.authenticate(key);
+
+        if (!authResult) {
+            infoToShow = "Authentication Failed!";
+            return false;
+        }
+
+        byte[] commonData = readCommonData();
+
+        //Validate
+        this.validateTicket(commonData, readMAC());
+        if (this.isValid) {
+            boolean res = true;
+
+            if (this.pastCounter == this.currentCounter) {
+                //TODO
+            } else {
+                res = utils.writePages(intToByteArray(1), 0, PAGE_COUNTER,
+                        COUNTER_SIZE);
+            }
+
+            // Set information to show for the user
+            if (res) {
+                infoToShow = "Ticket used!";
+                new TicketSuccessfulReadHistory(uid);
+                return true;
+            } else {
+                infoToShow = "Failed to read";
+                return false;
+            }
+
+        } else {
+            infoToShow = "Ticket not valid: " + failureReason;
+            return false;
+        }
+
+    }
+
+
+    private static void checkMAC() throws GeneralSecurityException {
+        boolean res = true;
         byte[] uid = new byte[UID_SIZE * PAGE_SIZE];
         utils.readPages(PAGE_UID, UID_SIZE, uid, 0);
         byte[] key = generateAuthKey(getUID(uid), MASTER_SECRET);
@@ -317,7 +402,7 @@ public class Ticket {
         if (!res) {
             Utilities.log("Authentication failed in issue()", true);
             infoToShow = "Authentication failed";
-            return false;
+            throw new GeneralSecurityException("AUTH failed");
         }
 
         byte[] data = new byte[PAGE_SIZE * COMMON_DATA_SIZE];
@@ -326,29 +411,12 @@ public class Ticket {
         byte[] readMac = new byte[MAC_SIZE * PAGE_SIZE];
         utils.readPages(PAGE_MAC, MAC_SIZE, readMac, 0);
 
-        byte[] MAC = macAlgorithm.generateMac(data);
+        byte[] MAC = Arrays.copyOfRange(macAlgorithm.generateMac(data), 0,
+                MAC_SIZE * PAGE_SIZE);
 
         if (Arrays.equals(readMac, MAC)) System.out.println("[!!!] mac matched");
-        else Utilities.log("mac not matched", true);*/
-
-        // resetAppTag();
-
-
-        // new key
-//        byte[] authKey = generateAuthKey(getUID(buff), MASTER_SECRET);
-//        res = utils.authenticate(authKey);
-
-        //Validate
-//        Ticket.validateTicket(this);
-
-
-        // Set information to show for the user
-        if (res) {
-            infoToShow = "Read: ";
-        } else {
-            infoToShow = "Failed to read";
-        }
-
-        return true;
+        else Utilities.log("mac not matched", true);
     }
 }
+
+
