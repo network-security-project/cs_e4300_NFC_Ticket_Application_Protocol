@@ -44,25 +44,26 @@ public class Ticket {
      * MEMORY LAYOUT
      * sizes are in number of pages except where specified
      */
+    private static final int PAGE_UID = 0;
     private static final int PAGE_APP_TAG = 4; // size == 2 pages
-    private static final int APP_TAG_SIZE = 2; // 2 pages, string of 8 bytes
-    private static final int PAGE_ISSUING_TS = 8;
     private static final int PAGE_RIDE_LIMIT_COUNTER = 6;
+    private static final int PAGE_ISSUING_TS = 8;
     private static final int PAGE_ACTIVATION_TS = 9;
-    private static final int TS_SIZE = 1;  // epoch rounded to minutes = int of 4 bytes (1 pages)
     private static final int PAGE_MAC = 39;
-    private static final int MAC_SIZE = 1;
     private static final int PAGE_COUNTER = 41; // size == 2B
     private static final int PAGE_AUTH_KEY = 44;
-    private static final int AUTH_KEY_SIZE = 4; // 4 pages, 16 bytes
-    private static final int PAGE_UID = 0;
-    private static final int UID_SIZE = 2;
-    private static final int COUNTER_SIZE = 1;
     private static final int PAGE_SIZE = 4; // page size is 4 bytes
     private static final int PAGE_COUNTER_LAST_VALUE = 7;
-    private static final int ZERO_TS = 0; // used to reset activation ts
     private static final int PAGE_AUTH0 = 42;
     private static final int PAGE_AUTH1 = 43;
+    private static final int APP_TAG_SIZE = 2; // 2 pages, string of 8 bytes
+    private static final int TS_SIZE = 1;  // epoch rounded to minutes = int of 4 bytes (1 page)
+    private static final int MAC_SIZE = 1;
+    private static final int AUTH_KEY_SIZE = 4; // 4 pages, 16 bytes
+    private static final int UID_SIZE = 2; // read of 2 pages, use getUID() to extract 7byte id
+    private static final int COUNTER_SIZE = 1;
+    private static final int COMMON_DATA_SIZE = APP_TAG_SIZE + COUNTER_SIZE + COUNTER_SIZE + TS_SIZE + TS_SIZE;
+    private static final int ZERO_TS = 0; // used to reset activation ts
     private static final int AUTH0_START_ADDRESS = 6; // r/w protect memory leaving app tag readable
     private static final int AUTH1_MODE = 0; // r/w restricted
 
@@ -129,9 +130,7 @@ public class Ticket {
      */
     public static byte[] generateAuthKey(byte[] uid, byte[] masterSecret) {
 
-        byte[] data = new byte[uid.length + masterSecret.length];
-        System.arraycopy(uid, 0, data, 0, uid.length);
-        System.arraycopy(masterSecret, 0, data, uid.length, masterSecret.length);
+        byte[] data = concatAll(uid, masterSecret);
         byte[] key = null;
 
         try {
@@ -171,6 +170,10 @@ public class Ticket {
                 intToByteArray(issueTS),
                 intToByteArray(ZERO_TS)
         );
+    }
+
+    public static boolean resetAppTag() {
+        return utils.writePages("        ".getBytes(), 0, PAGE_APP_TAG, APP_TAG_SIZE);
     }
 
     /**
@@ -217,6 +220,7 @@ public class Ticket {
      */
     public boolean issue(int daysValid, int uses) throws GeneralSecurityException {
         boolean res = false;
+        boolean init = true;
         infoToShow = "Issuing failed.";
 
         // read app tag and check for current version
@@ -229,26 +233,38 @@ public class Ticket {
             // foreign card, reject it
             Utilities.log("[?] Found foreign card, stopping issuing...", true);
             throw new GeneralSecurityException("Unrecognized card supplied!");
-
         }
 
         // read uid and generate unique authentication key
         byte[] uid = new byte[UID_SIZE * PAGE_SIZE];
         utils.readPages(PAGE_UID, UID_SIZE, uid, 0);
-        byte[] key = generateAuthKey(uid, MASTER_SECRET);
+        byte[] key = generateAuthKey(getUID(uid), MASTER_SECRET);
+
         int currentCounter = 0;
         int currentLimit = 0;
 
         if (appTag.trim().equals("")) {
-            // card's a new one, init counter and key and continue
-            res = utils.writePages(intToByteArray(0), 0, PAGE_COUNTER, COUNTER_SIZE);
-            res = res && utils.writePages(key, 0, PAGE_AUTH_KEY, AUTH_KEY_SIZE);
+            // card's a new one, init counter, limit, key and continue
+            // FOR SECURITY, WRITE CURRENT COUNTER VALUE TO LIMIT VALUE
+            byte[] buff = new byte[PAGE_SIZE * COUNTER_SIZE];
+            init = utils.readPages(PAGE_COUNTER, COUNTER_SIZE, buff, 0  );
+
+            /*
+            current counter gets init to 0 but if tag is to be initialized then the wrong value gets passed
+            to common data
+            on first init, counter value needs to be copied to limit value
+            if someone introduces a card with the correct app tag, then it passese the issue (but not the use)
+            * */
+
+            init = init && utils.writePages(intToByteArray(0), 0, PAGE_COUNTER, COUNTER_SIZE);
+//            init = init && utils.writePages(buff, 0, PAGE_RIDE_LIMIT_COUNTER, COUNTER_SIZE);
+            init = init && utils.writePages(key, 0, PAGE_AUTH_KEY, AUTH_KEY_SIZE);
         } else {
             // reused card, authenticate
             boolean authResult = utils.authenticate(key);
 
             if (!authResult) {
-                throw new GeneralSecurityException("Authentication fail!");
+                throw new GeneralSecurityException("Authentication failed!");
             }
 
             // read current counter
@@ -269,11 +285,13 @@ public class Ticket {
 
         byte[] commonData = generateCommonData(currentCounter, currentLimit, uses);
         byte[] mac = macAlgorithm.generateMac(commonData);
+
+        res = utils.writePages(commonData, 0, PAGE_APP_TAG, COMMON_DATA_SIZE);
         res = res && utils.writePages(mac, 0, PAGE_MAC, MAC_SIZE);
 //        utils.writePages(intToByteArray(AUTH0_START_ADDRESS), 0, PAGE_AUTH0, 1);
 //        utils.writePages(intToByteArray(AUTH1_MODE), 0, PAGE_AUTH1, 1);
 
-        if (res) {
+        if (init && res) {
             infoToShow = "Ticket issued.";
             return true;
         }
@@ -288,21 +306,33 @@ public class Ticket {
      * TODO: IMPLEMENT
      */
     public boolean use() throws GeneralSecurityException {
-        boolean res;
+        boolean res = false;
+/*
+        byte[] uid = new byte[UID_SIZE * PAGE_SIZE];
+        utils.readPages(PAGE_UID, UID_SIZE, uid, 0);
+        byte[] key = generateAuthKey(getUID(uid), MASTER_SECRET);
 
         // Authenticate
-        res = utils.authenticate(DEFAULT_AUTHENTICATION_KEY);
-//        if (!res) {
-//            Utilities.log("Authentication failed in issue()", true);
-//            infoToShow = "Authentication failed";
-//            return false;
-//        }
-//
-//        System.out.println(res);
+        res = utils.authenticate(key);
+        if (!res) {
+            Utilities.log("Authentication failed in issue()", true);
+            infoToShow = "Authentication failed";
+            return false;
+        }
 
-        // uid
-//        byte[] buff = new byte[8];
-//        res = utils.writePages(DEFAULT_AUTHENTICATION_KEY, 0, PAGE_AUTH_KEY, AUTH_KEY_SIZE);
+        byte[] data = new byte[PAGE_SIZE * COMMON_DATA_SIZE];
+        utils.readPages(PAGE_APP_TAG, COMMON_DATA_SIZE, data, 0);
+
+        byte[] readMac = new byte[MAC_SIZE * PAGE_SIZE];
+        utils.readPages(PAGE_MAC, MAC_SIZE, readMac, 0);
+
+        byte[] MAC = macAlgorithm.generateMac(data);
+
+        if (Arrays.equals(readMac, MAC)) System.out.println("[!!!] mac matched");
+        else Utilities.log("mac not matched", true);*/
+
+        // resetAppTag();
+
 
         // new key
 //        byte[] authKey = generateAuthKey(getUID(buff), MASTER_SECRET);
