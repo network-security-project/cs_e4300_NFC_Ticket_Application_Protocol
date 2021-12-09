@@ -274,7 +274,7 @@ public class Ticket {
         String appTag = new String(read);
         System.out.println("++++++       read tag: " + appTag);
 
-        if (!appTag.equals(CURRENT_APP_VERSION) && !appTag.trim().equals("")) {
+        if (!appTag.equals(CURRENT_APP_VERSION)) {
             // foreign card, reject it
             Utilities.log("[?] Found foreign card, stopping issuing...", true);
             throw new GeneralSecurityException("Unrecognized card supplied!");
@@ -371,7 +371,8 @@ public class Ticket {
                         (COMMON_DATA_SIZE - TS_SIZE) * PAGE_SIZE, TS_SIZE * PAGE_SIZE);
                 byte[] mac = macAlgorithm.generateMac(commonData);
 
-                res = utils.writePages(commonData, 0, PAGE_APP_TAG, COMMON_DATA_SIZE);
+                res = utils.writePages(intToByteArray(currentTime), 0, PAGE_ACTIVATION_TS,
+                        TS_SIZE);
                 res = res && utils.writePages(mac, 0, PAGE_MAC, MAC_SIZE);
             }
 
@@ -390,6 +391,7 @@ public class Ticket {
 
         } else {
             infoToShow = "Ticket not valid: " + failureReason;
+            //TODO how many rides left and expiary time
             return false;
         }
 
