@@ -367,11 +367,16 @@ public class Ticket {
             boolean res = true;
 
             if (this.pastCounter == this.currentCounter) {
-                //TODO
-            } else {
-                res = utils.writePages(intToByteArray(1), 0, PAGE_COUNTER,
-                        COUNTER_SIZE);
+                System.arraycopy(intToByteArray(currentTime), 0, commonData,
+                        (COMMON_DATA_SIZE - TS_SIZE) * PAGE_SIZE, TS_SIZE * PAGE_SIZE);
+                byte[] mac = macAlgorithm.generateMac(commonData);
+
+                res = utils.writePages(commonData, 0, PAGE_APP_TAG, COMMON_DATA_SIZE);
+                res = res && utils.writePages(mac, 0, PAGE_MAC, MAC_SIZE);
             }
+
+            res = res && utils.writePages(intToByteArray(1), 0, PAGE_COUNTER,
+                    COUNTER_SIZE);
 
             // Set information to show for the user
             if (res) {
@@ -379,7 +384,7 @@ public class Ticket {
                 new TicketSuccessfulReadHistory(uid);
                 return true;
             } else {
-                infoToShow = "Failed to read";
+                infoToShow = "Failed to read, Hold longer";
                 return false;
             }
 
