@@ -371,9 +371,9 @@ public class Ticket {
                         (COMMON_DATA_SIZE - TS_SIZE) * PAGE_SIZE, TS_SIZE * PAGE_SIZE);
                 byte[] mac = macAlgorithm.generateMac(commonData);
 
-                res = utils.writePages(intToByteArray(currentTime), 0, PAGE_ACTIVATION_TS,
+                res = utils.writePages(mac, 0, PAGE_MAC, MAC_SIZE);
+                res = res && utils.writePages(intToByteArray(currentTime), 0, PAGE_ACTIVATION_TS,
                         TS_SIZE);
-                res = res && utils.writePages(mac, 0, PAGE_MAC, MAC_SIZE);
             }
 
             res = res && utils.writePages(intToByteArray(1), 0, PAGE_COUNTER,
