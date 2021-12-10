@@ -129,9 +129,6 @@ public class Ticket {
      * Checks used in USE
      */
     private void validateTicket(byte[] commonData, byte[] cardMAC, int currentTime) {
-        this.remainingUses = 1;
-        this.expiryTime = 1;
-
         byte[] calculatedMAC = Arrays.copyOfRange(macAlgorithm.generateMac(commonData), 0,
                 MAC_SIZE * PAGE_SIZE);
 
@@ -258,7 +255,7 @@ public class Ticket {
     }
 
     private byte[] readMAC() {
-        byte[] mac = new byte[UID_SIZE * PAGE_SIZE];
+        byte[] mac = new byte[MAC_SIZE * PAGE_SIZE];
         utils.readPages(PAGE_MAC, MAC_SIZE, mac, 0);
         return mac;
     }
@@ -335,18 +332,15 @@ public class Ticket {
         // read uid and generate unique authentication key
         byte[] key = generateAuthKey(readUID(), MASTER_SECRET);
 
-        int currentCounter = 0;
         int currentLimit = 0;
+        byte[] buff = new byte[PAGE_SIZE * COUNTER_SIZE];
 
         // read current counter
-        byte[] buff = new byte[4];
-        utils.readPages(PAGE_COUNTER, COUNTER_SIZE, buff, 0);
-        currentCounter = byteArrayToInt(buff);
+        currentCounter = readCounter();
 
         if (currentCounter == 0) {
             // card's a new one, init counter, limit, key and continue
             // FOR SECURITY, WRITE CURRENT COUNTER VALUE TO LIMIT VALUE
-            buff = new byte[PAGE_SIZE * COUNTER_SIZE];
             init = utils.readPages(PAGE_COUNTER, COUNTER_SIZE, buff, 0);
 
             init = init && utils.writePages(intToByteArray(0), 0, PAGE_COUNTER, COUNTER_SIZE);
@@ -434,7 +428,8 @@ public class Ticket {
 
             // Set information to show for the user
             if (res) {
-                infoToShow = "Ticket used!";
+                infoToShow = "Ticket not valid: " + failureReason + "\n Available rides: " +
+                        this.remainingUses + "\n Expiry time: " + this.expiryTime;
                 new TicketSuccessfulReadHistory(uid);
                 return true;
             } else {
@@ -443,8 +438,7 @@ public class Ticket {
             }
 
         } else {
-            infoToShow = "Ticket not valid: " + failureReason + "\n Available rides: " +
-                    this.remainingUses + "\n Expiry time: " + this.expiryTime;
+            infoToShow = "Ticket not valid: " + failureReason;
             return false;
         }
 
