@@ -428,8 +428,10 @@ public class Ticket {
 
             // Set information to show for the user
             if (res) {
-                infoToShow = "Ticket used\n Available rides: " +
-                        this.remainingUses + "\n Expiry time: " + this.expiryTime;
+                String expiryDate = new java.text.SimpleDateFormat("MM/dd/yyyy HH:mm")
+                        .format(new java.util.Date (this.expiryTime * 60 * 1000));
+                infoToShow = "Ticket not valid: " + failureReason + "\nAvailable rides: " +
+                        this.remainingUses + "\nExpiry time: " + expiryDate;
                 new TicketSuccessfulReadHistory(uid);
                 return true;
             } else {
