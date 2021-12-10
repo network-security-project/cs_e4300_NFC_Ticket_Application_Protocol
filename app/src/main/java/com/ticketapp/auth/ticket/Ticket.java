@@ -101,8 +101,8 @@ public class Ticket {
     }
 
     /*
-    * Parse common data into variables
-    * */
+     * Parse common data into variables
+     * */
     private void serializeCommonData(byte[] commonData) {
 
         int start = APP_TAG_SIZE * PAGE_SIZE;
@@ -140,7 +140,7 @@ public class Ticket {
                 return;
             }
 
-            if (this.expiryTime < currentTime) {
+            if (this.expiryTime <= currentTime) {
                 this.isValid = false;
                 failureReason = "The ticket has expired";
                 return;
@@ -391,7 +391,7 @@ public class Ticket {
         byte[] uid = readUID();
 
         TicketSuccessfulReadHistory uidHistory = TicketSuccessfulReadHistory.
-                successfulReadHistoryList.get(uid);
+                successfulReadHistoryList.get(ByteBuffer.wrap(uid));
         if (uidHistory != null && !uidHistory.isExpired(currentTime)) {
             infoToShow = "This ticket has been used in the past 5 minutes";
             return false;
@@ -428,7 +428,7 @@ public class Ticket {
 
             // Set information to show for the user
             if (res) {
-                infoToShow = "Ticket not valid: " + failureReason + "\n Available rides: " +
+                infoToShow = "Ticket used\n Available rides: " +
                         this.remainingUses + "\n Expiry time: " + this.expiryTime;
                 new TicketSuccessfulReadHistory(uid);
                 return true;
