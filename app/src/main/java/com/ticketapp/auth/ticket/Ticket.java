@@ -32,8 +32,8 @@ public class Ticket {
     /*
     Values for issue
     * */
-    private static final int TICKET_USES = 10;
-    private static final int MINUTES_VALID = 30;
+    private static final int TICKET_USES = 5;
+    private static final int MINUTES_VALID = 15;
 
 
     public static byte[] data = new byte[192];
