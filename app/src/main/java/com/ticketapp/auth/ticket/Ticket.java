@@ -29,6 +29,12 @@ public class Ticket {
     private static final byte[] MASTER_SECRET = TicketActivity.outer.getString(R.string.master_key).getBytes();
     private static final byte[] HMAC_KEY = TicketActivity.outer.getString(R.string.hmac_key).getBytes();
 
+    /*
+    Values for issue
+    * */
+    private static final int TICKET_USES = 10;
+    private static final int MINUTES_VALID = 30;
+
 
     public static byte[] data = new byte[192];
 
@@ -94,8 +100,28 @@ public class Ticket {
         utils = new Utilities(ul);
     }
 
-
+    /*
+    * Parse common data into variables
+    * */
     private void serializeCommonData(byte[] commonData) {
+
+        int start = APP_TAG_SIZE * PAGE_SIZE;
+        limitCounter = byteArrayToInt(Arrays.copyOfRange(commonData, start,
+                start + (COUNTER_SIZE * PAGE_SIZE)));
+
+        start += (COUNTER_SIZE * PAGE_SIZE);
+
+        pastCounter = byteArrayToInt(Arrays.copyOfRange(commonData, start,
+                start + (COUNTER_SIZE * PAGE_SIZE)));
+
+        start += (COUNTER_SIZE * PAGE_SIZE);
+
+        expiryTime = byteArrayToInt(Arrays.copyOfRange(commonData, start,
+                start + (COUNTER_SIZE * PAGE_SIZE))) + MINUTES_VALID;
+
+        this.currentCounter = readCounter();
+
+        remainingUses = limitCounter - this.currentCounter;
 
     }
 
@@ -237,6 +263,12 @@ public class Ticket {
         return mac;
     }
 
+    private int readCounter() {
+        byte[] counter = new byte[COUNTER_SIZE * PAGE_SIZE];
+        utils.readPages(PAGE_COUNTER, COUNTER_SIZE, counter, 0);
+        return byteArrayToInt(counter);
+    }
+
     public static boolean resetAppTag() {
         return utils.writePages("        ".getBytes(), 0, PAGE_APP_TAG, APP_TAG_SIZE);
     }
@@ -283,7 +315,7 @@ public class Ticket {
      * 4. update issuing timestamp
      * 5. MAC info
      */
-    public boolean issue(int daysValid, int uses) throws GeneralSecurityException {
+    public boolean issue() throws GeneralSecurityException {
         boolean res;
         boolean init = true;
         infoToShow = "Issuing failed.";
@@ -331,14 +363,14 @@ public class Ticket {
             utils.readPages(PAGE_RIDE_LIMIT_COUNTER, COUNTER_SIZE, buff, 0);
             currentLimit = byteArrayToInt(buff);
 
-            if ((currentCounter + uses > MAX_COUNTER_VALUE) &&
-                    (currentLimit - currentCounter + uses < MAX_RIDES_ALLOWED)) {
+            if ((currentCounter + TICKET_USES > MAX_COUNTER_VALUE) &&
+                    (currentLimit - currentCounter + TICKET_USES < MAX_RIDES_ALLOWED)) {
                 Utilities.log("Safe limits exceeded, aborting...", true);
                 throw new GeneralSecurityException("Counter value exceeds! try New Card");
             }
         }
 
-        byte[] commonData = generateCommonData(currentCounter, currentLimit, uses);
+        byte[] commonData = generateCommonData(currentCounter, currentLimit, TICKET_USES);
         byte[] mac = macAlgorithm.generateMac(commonData);
 
         res = utils.writePages(commonData, 0, PAGE_APP_TAG, COMMON_DATA_SIZE);
@@ -381,12 +413,13 @@ public class Ticket {
 
         byte[] commonData = readCommonData();
 
-        //Validate
+        // Validate
         this.validateTicket(commonData, readMAC(), currentTime);
         if (this.isValid) {
             boolean res = true;
 
             if (this.pastCounter == this.currentCounter) {
+                // first use
                 System.arraycopy(intToByteArray(currentTime), 0, commonData,
                         (COMMON_DATA_SIZE - TS_SIZE) * PAGE_SIZE, TS_SIZE * PAGE_SIZE);
                 byte[] mac = macAlgorithm.generateMac(commonData);
