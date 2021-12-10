@@ -74,15 +74,14 @@ public class Ticket {
     private static final int COUNTER_SIZE = 1;
     private static final int COMMON_DATA_SIZE = APP_TAG_SIZE + COUNTER_SIZE + COUNTER_SIZE + TS_SIZE + TS_SIZE;
     private static final int ZERO_TS = 0; // used to reset activation ts
-    private static final int AUTH0_START_ADDRESS = 6; // r/w protect memory leaving app tag readable
-    private static final int AUTH1_MODE = 0; // r/w restricted
+    private static final int AUTH0_START_ADDRESS = 4; // write protect memory from app tag
+    private static final int AUTH1_MODE = 1; // write restricted
 
     /*
     SAFE LIMITS
      */
     private static final int MAX_COUNTER_VALUE = 65535;                   // 0xFFFF
     private static final int MAX_RIDES_ALLOWED = 100;                // max number of rides allowed for security
-    private static final int MIN_RIDES_ALLOWED = 30;                // card reached EOL
     private static final String CURRENT_APP_VERSION = "NFC0.0.0";   // app tag
 
     private static String infoToShow = "-"; // Use this to show messages
@@ -119,9 +118,9 @@ public class Ticket {
         expiryTime = byteArrayToInt(Arrays.copyOfRange(commonData, start,
                 start + (COUNTER_SIZE * PAGE_SIZE))) + MINUTES_VALID;
 
-        this.currentCounter = readCounter();
+        currentCounter = readCounter();
 
-        remainingUses = limitCounter - this.currentCounter;
+        remainingUses = limitCounter - currentCounter;
 
     }
 
@@ -129,35 +128,51 @@ public class Ticket {
      * Checks used in USE
      */
     private void validateTicket(byte[] commonData, byte[] cardMAC, int currentTime) {
+        serializeCommonData(commonData);
+
         byte[] calculatedMAC = Arrays.copyOfRange(macAlgorithm.generateMac(commonData), 0,
                 MAC_SIZE * PAGE_SIZE);
 
-        if (Arrays.equals(calculatedMAC, cardMAC)) {
-            serializeCommonData(commonData);
-            if (this.remainingUses <= 0) {
+        if (!Arrays.equals(calculatedMAC, cardMAC)) {
+            if (this.pastCounter == this.currentCounter) {
+                //There might have been a tearing during the first use
+
+                System.arraycopy(intToByteArray(ZERO_TS), 0, commonData,
+                        (COMMON_DATA_SIZE - TS_SIZE) * PAGE_SIZE, TS_SIZE * PAGE_SIZE);
+                calculatedMAC = Arrays.copyOfRange(macAlgorithm.generateMac(commonData), 0,
+                        MAC_SIZE * PAGE_SIZE);
+
+                if (!Arrays.equals(calculatedMAC, cardMAC)) {
+                    this.isValid = false;
+                    failureReason = "MAC mismatch";
+                    return;
+                }
+            } else {
                 this.isValid = false;
-                failureReason = "No more rides left";
+                failureReason = "MAC mismatch";
                 return;
             }
-
-            if (this.expiryTime <= currentTime) {
-                this.isValid = false;
-                failureReason = "The ticket has expired";
-                return;
-            }
-
-            if (this.remainingUses > MAX_RIDES_ALLOWED) {
-                this.isValid = false;
-                failureReason = "Ticket has unreasonable number of rides";
-                return;
-            }
-
-            this.isValid = true;
-
-        } else {
-            this.isValid = false;
-            failureReason = "MAC mismatch";
         }
+
+        if (this.remainingUses <= 0) {
+            this.isValid = false;
+            failureReason = "No more rides left";
+            return;
+        }
+
+        if (this.expiryTime <= currentTime) {
+            this.isValid = false;
+            failureReason = "The ticket has expired";
+            return;
+        }
+
+        if (this.remainingUses > MAX_RIDES_ALLOWED) {
+            this.isValid = false;
+            failureReason = "Ticket has unreasonable number of rides";
+            return;
+        }
+
+        this.isValid = true;
     }
 
     /*
@@ -264,10 +279,6 @@ public class Ticket {
         byte[] counter = new byte[COUNTER_SIZE * PAGE_SIZE];
         utils.readPages(PAGE_COUNTER, COUNTER_SIZE, counter, 0);
         return byteArrayToInt(counter);
-    }
-
-    public static boolean resetAppTag() {
-        return utils.writePages("        ".getBytes(), 0, PAGE_APP_TAG, APP_TAG_SIZE);
     }
 
     /**
@@ -392,9 +403,9 @@ public class Ticket {
 
         TicketSuccessfulReadHistory uidHistory = TicketSuccessfulReadHistory.
                 successfulReadHistoryList.get(ByteBuffer.wrap(uid));
-        if (uidHistory != null && !uidHistory.isExpired(currentTime)) {
+        if (uidHistory != null && !uidHistory.isExpired()) {
             infoToShow = "This ticket has been used in the past " +
-                    TicketSuccessfulReadHistory.VALIDITY_PERIOD + " minutes";
+                    TicketSuccessfulReadHistory.VALIDITY_PERIOD_SECONDS / 60 + " minutes";
             return false;
         }
 
@@ -419,9 +430,9 @@ public class Ticket {
                         (COMMON_DATA_SIZE - TS_SIZE) * PAGE_SIZE, TS_SIZE * PAGE_SIZE);
                 byte[] mac = macAlgorithm.generateMac(commonData);
 
-                res = utils.writePages(mac, 0, PAGE_MAC, MAC_SIZE);
-                res = res && utils.writePages(intToByteArray(currentTime), 0, PAGE_ACTIVATION_TS,
+                res = utils.writePages(intToByteArray(currentTime), 0, PAGE_ACTIVATION_TS,
                         TS_SIZE);
+                res = res && utils.writePages(mac, 0, PAGE_MAC, MAC_SIZE);
             }
 
             res = res && utils.writePages(intToByteArray(1), 0, PAGE_COUNTER,
@@ -443,34 +454,6 @@ public class Ticket {
             return false;
         }
 
-    }
-
-
-    private static void checkMAC() throws GeneralSecurityException {
-        boolean res = true;
-        byte[] uid = new byte[UID_SIZE * PAGE_SIZE];
-        utils.readPages(PAGE_UID, UID_SIZE, uid, 0);
-        byte[] key = generateAuthKey(getUID(uid), MASTER_SECRET);
-
-        // Authenticate
-        res = utils.authenticate(key);
-        if (!res) {
-            Utilities.log("Authentication failed in issue()", true);
-            infoToShow = "Authentication failed";
-            throw new GeneralSecurityException("AUTH failed");
-        }
-
-        byte[] data = new byte[PAGE_SIZE * COMMON_DATA_SIZE];
-        utils.readPages(PAGE_APP_TAG, COMMON_DATA_SIZE, data, 0);
-
-        byte[] readMac = new byte[MAC_SIZE * PAGE_SIZE];
-        utils.readPages(PAGE_MAC, MAC_SIZE, readMac, 0);
-
-        byte[] MAC = Arrays.copyOfRange(macAlgorithm.generateMac(data), 0,
-                MAC_SIZE * PAGE_SIZE);
-
-        if (Arrays.equals(readMac, MAC)) System.out.println("[!!!] mac matched");
-        else Utilities.log("mac not matched", true);
     }
 }
 
