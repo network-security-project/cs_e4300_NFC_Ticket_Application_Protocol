@@ -369,8 +369,8 @@ public class Ticket {
 
         res = utils.writePages(commonData, 0, PAGE_APP_TAG, COMMON_DATA_SIZE);
         res = res && utils.writePages(mac, 0, PAGE_MAC, MAC_SIZE);
-//        utils.writePages(intToByteArray(AUTH0_START_ADDRESS), 0, PAGE_AUTH0, 1);
-//        utils.writePages(intToByteArray(AUTH1_MODE), 0, PAGE_AUTH1, 1);
+        utils.writePages(intToByteArray(AUTH0_START_ADDRESS), 0, PAGE_AUTH0, 1);
+        utils.writePages(intToByteArray(AUTH1_MODE), 0, PAGE_AUTH1, 1);
 
         if (init && res) {
             infoToShow = "Ticket issued.";
@@ -393,7 +393,8 @@ public class Ticket {
         TicketSuccessfulReadHistory uidHistory = TicketSuccessfulReadHistory.
                 successfulReadHistoryList.get(ByteBuffer.wrap(uid));
         if (uidHistory != null && !uidHistory.isExpired(currentTime)) {
-            infoToShow = "This ticket has been used in the past 5 minutes";
+            infoToShow = "This ticket has been used in the past " +
+                    TicketSuccessfulReadHistory.VALIDITY_PERIOD + " minutes";
             return false;
         }
 
@@ -428,10 +429,8 @@ public class Ticket {
 
             // Set information to show for the user
             if (res) {
-                String expiryDate = new java.text.SimpleDateFormat("MM/dd/yyyy HH:mm")
-                        .format(new java.util.Date (this.expiryTime * 60 * 1000));
-                infoToShow = "Ticket not valid: " + failureReason + "\nAvailable rides: " +
-                        this.remainingUses + "\nExpiry time: " + expiryDate;
+                infoToShow = "Ticket used!\nAvailable rides: " +
+                        this.remainingUses + "\nExpiry time: " + new Date((long) expiryTime * 60 * 1000);
                 new TicketSuccessfulReadHistory(uid);
                 return true;
             } else {

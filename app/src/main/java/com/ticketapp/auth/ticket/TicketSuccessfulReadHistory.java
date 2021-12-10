@@ -5,7 +5,7 @@ import java.util.Date;
 import java.util.HashMap;
 
 public class TicketSuccessfulReadHistory {
-    private static final int VALIDITY_PERIOD = 1;
+    public static final int VALIDITY_PERIOD = 1;
 
     private final int readTime;
     private final byte[] uid;
