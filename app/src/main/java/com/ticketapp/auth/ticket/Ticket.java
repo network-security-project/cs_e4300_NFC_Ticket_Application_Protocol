@@ -30,14 +30,14 @@ public class Ticket {
     private static final byte[] HMAC_KEY = TicketActivity.outer.getString(R.string.hmac_key).getBytes();
 
 
-    public static byte[] data = new byte[192]; //TODO shall we use?
+    public static byte[] data = new byte[192];
 
 
     private static TicketMac macAlgorithm; // For computing HMAC over ticket data, as needed
     private static Utilities utils;
     private static Commands ul;
 
-    private Boolean isValid = false;
+    private Boolean isValid = true;
     private int remainingUses = 0;
     private int expiryTime = 0;
     private int currentCounter = 0;
@@ -102,7 +102,7 @@ public class Ticket {
     /*
      * Checks used in USE
      */
-    private void validateTicket(byte[] commonData, byte[] cardMAC) {
+    private void validateTicket(byte[] commonData, byte[] cardMAC, int currentTime) {
         this.remainingUses = 1;
         this.expiryTime = 1;
 
@@ -111,6 +111,26 @@ public class Ticket {
 
         if (Arrays.equals(calculatedMAC, cardMAC)) {
             serializeCommonData(commonData);
+            if (this.remainingUses <= 0) {
+                this.isValid = false;
+                failureReason = "No more rides left";
+                return;
+            }
+
+            if (this.expiryTime < currentTime) {
+                this.isValid = false;
+                failureReason = "The ticket has expired";
+                return;
+            }
+
+            if (this.remainingUses > MAX_RIDES_ALLOWED) {
+                this.isValid = false;
+                failureReason = "Ticket has unreasonable number of rides";
+                return;
+            }
+
+            this.isValid = true;
+
         } else {
             this.isValid = false;
             failureReason = "MAC mismatch";
@@ -362,7 +382,7 @@ public class Ticket {
         byte[] commonData = readCommonData();
 
         //Validate
-        this.validateTicket(commonData, readMAC());
+        this.validateTicket(commonData, readMAC(), currentTime);
         if (this.isValid) {
             boolean res = true;
 
@@ -390,8 +410,8 @@ public class Ticket {
             }
 
         } else {
-            infoToShow = "Ticket not valid: " + failureReason;
-            //TODO how many rides left and expiary time
+            infoToShow = "Ticket not valid: " + failureReason + "\n Available rides: " +
+                    this.remainingUses + "\n Expiry time: " + this.expiryTime;
             return false;
         }
 
