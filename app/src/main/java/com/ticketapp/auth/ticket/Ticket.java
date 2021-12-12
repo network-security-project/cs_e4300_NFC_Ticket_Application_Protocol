@@ -22,7 +22,7 @@ import java.util.Date;
 public class Ticket {
 
     /**
-     * Default keys are stored in res/values/secrets.xml
+     * Keys are stored in res/values/secrets.xml
      **/
     private static final byte[] DEFAULT_AUTHENTICATION_KEY = TicketActivity.outer.getString(R.string.default_auth_key).getBytes();
     private static final byte[] DEFAULT_HMAC_KEY = TicketActivity.outer.getString(R.string.default_hmac_key).getBytes();
@@ -30,25 +30,10 @@ public class Ticket {
     private static final byte[] HMAC_KEY = TicketActivity.outer.getString(R.string.hmac_key).getBytes();
 
     /*
-    Values for issue
+    * Values for issue
     * */
     private static final int TICKET_USES = 5;
     private static final int MINUTES_VALID = 15;
-
-
-    public static byte[] data = new byte[192];
-
-
-    private static TicketMac macAlgorithm; // For computing HMAC over ticket data, as needed
-    private static Utilities utils;
-    private static Commands ul;
-
-    private Boolean isValid = true;
-    private int remainingUses = 0;
-    private int expiryTime = 0;
-    private int currentCounter = 0;
-    private int limitCounter = 0;
-    private int pastCounter = 0;
 
     /*
      * MEMORY LAYOUT
@@ -57,22 +42,22 @@ public class Ticket {
     private static final int PAGE_UID = 0;
     private static final int PAGE_APP_TAG = 4; // size == 2 pages
     private static final int PAGE_RIDE_LIMIT_COUNTER = 6;
+    private static final int PAGE_COUNTER_LAST_VALUE = 7;
     private static final int PAGE_ISSUING_TS = 8;
     private static final int PAGE_ACTIVATION_TS = 9;
     private static final int PAGE_MAC = 39;
     private static final int PAGE_COUNTER = 41; // size == 2B
     private static final int PAGE_AUTH_KEY = 44;
-    private static final int PAGE_SIZE = 4; // page size is 4 bytes
-    private static final int PAGE_COUNTER_LAST_VALUE = 7;
     private static final int PAGE_AUTH0 = 42;
     private static final int PAGE_AUTH1 = 43;
+    private static final int PAGE_SIZE = 4; // page size is 4 bytes
     private static final int APP_TAG_SIZE = 2; // 2 pages, string of 8 bytes
     private static final int TS_SIZE = 1;  // epoch rounded to minutes = int of 4 bytes (1 page)
     private static final int MAC_SIZE = 1;
     private static final int AUTH_KEY_SIZE = 4; // 4 pages, 16 bytes
     private static final int UID_SIZE = 2; // read of 2 pages, use getUID() to extract 7byte id
     private static final int COUNTER_SIZE = 1;
-    private static final int COMMON_DATA_SIZE = APP_TAG_SIZE + COUNTER_SIZE + COUNTER_SIZE + TS_SIZE + TS_SIZE;
+    private static final int COMMON_DATA_SIZE = APP_TAG_SIZE + COUNTER_SIZE + COUNTER_SIZE + TS_SIZE + TS_SIZE; // data structure for static data on card
     private static final int ZERO_TS = 0; // used to reset activation ts
     private static final int AUTH0_START_ADDRESS = 4; // write protect memory from app tag
     private static final int AUTH1_MODE = 1; // write restricted
@@ -80,9 +65,23 @@ public class Ticket {
     /*
     SAFE LIMITS
      */
-    private static final int MAX_COUNTER_VALUE = 65535;                   // 0xFFFF
-    private static final int MAX_RIDES_ALLOWED = 100;                // max number of rides allowed for security
+    private static final int MAX_COUNTER_VALUE = 65535;              // 0xFFFF
+    private static final int MAX_RIDES_ALLOWED = 50;                // max number of rides allowed for security
     private static final String CURRENT_APP_VERSION = "NFC0.0.0";   // app tag
+
+    private static TicketMac macAlgorithm;
+    private static Utilities utils;
+    private static Commands ul;
+
+    /*
+    * State of ticket used in use()
+    * */
+    private Boolean isValid = true;
+    private int remainingUses = 0;
+    private int expiryTime = 0;
+    private int currentCounter = 0;
+    private int limitCounter = 0;
+    private int pastCounter = 0;
 
     private static String infoToShow = "-"; // Use this to show messages
     private String failureReason = "-"; // Use this to show the user the reason of a possible failure
@@ -100,7 +99,7 @@ public class Ticket {
     }
 
     /*
-     * Parse common data into variables
+     * Parse common data into state attributes
      * */
     private void serializeCommonData(byte[] commonData) {
 
@@ -128,14 +127,19 @@ public class Ticket {
      * Checks used in USE
      */
     private void validateTicket(byte[] commonData, byte[] cardMAC, int currentTime) {
+
+        // parse read data
         serializeCommonData(commonData);
 
+        // we use a 4-byte mac, so truncate
         byte[] calculatedMAC = Arrays.copyOfRange(macAlgorithm.generateMac(commonData), 0,
                 MAC_SIZE * PAGE_SIZE);
 
         if (!Arrays.equals(calculatedMAC, cardMAC)) {
             if (this.pastCounter == this.currentCounter) {
-                //There might have been a tearing during the first use
+                // No change in counter but mac mismatch, there might have been tearing during first use.
+                // So try to revert to previous state by calculating the mac again with a zeroed activation TS.
+                // If there's a match, then tearing happened on last use, accept ticket
 
                 System.arraycopy(intToByteArray(ZERO_TS), 0, commonData,
                         (COMMON_DATA_SIZE - TS_SIZE) * PAGE_SIZE, TS_SIZE * PAGE_SIZE);
@@ -148,6 +152,7 @@ public class Ticket {
                     return;
                 }
             } else {
+                // ticket has been tampered with
                 this.isValid = false;
                 failureReason = "MAC mismatch";
                 return;
@@ -192,14 +197,14 @@ public class Ticket {
     }
 
     /**
-     * Helper function for extracting UID from read buffer of 8 byte
+     * Helper function for extracting 7 byte UID from first two pages of 8 byte
      */
     public static byte[] getUID(byte[] array) {
         return new byte[]{array[0], array[1], array[2], array[4], array[5], array[6], array[7]};
     }
 
     /**
-     * Generate unique authentication key by hashing ( uid | secret )
+     * Generate unique authentication key by hashing ( uid | secret ) with sha-256
      *
      * @param uid          card's UID
      * @param masterSecret common master secret
@@ -221,6 +226,9 @@ public class Ticket {
         return key;
     }
 
+    /**
+     * Helper for concatenation of byte arrays, wraps Arrays.copyOf()
+     * */
     public static byte[] concatAll(byte[] first, byte[]... rest) {
         int totalLength = first.length;
         for (byte[] array : rest) {
@@ -236,7 +244,13 @@ public class Ticket {
     }
 
     /**
-     * If card is blank, initialize with current app tag, new key, auth settings
+     * Common data includes static data needed to ensure integrity of the ticket.
+     * Consists of:
+     *  - App tag & version
+     *  - Rides limit counter
+     *  - Counter value at issuing and first use
+     *  - Issuing TS
+     *  - First use TS
      */
     public static byte[] generateCommonData(int currentCounter, int counterLimit, int uses) {
         int issueTS = (int) ((new Date()).getTime() / 1000 / 60);
@@ -257,24 +271,36 @@ public class Ticket {
         );
     }
 
+    /*
+    * Return common data on card
+    * */
     private byte[] readCommonData() {
         byte[] buff = new byte[COMMON_DATA_SIZE * PAGE_SIZE];
         utils.readPages(PAGE_APP_TAG, COMMON_DATA_SIZE, buff, 0);
         return buff;
     }
 
+    /*
+    * Return 7-byte UID of card
+    * */
     private byte[] readUID() {
         byte[] uid = new byte[UID_SIZE * PAGE_SIZE];
         utils.readPages(PAGE_UID, UID_SIZE, uid, 0);
         return getUID(uid);
     }
 
+    /*
+    * Return MAC on card
+    * */
     private byte[] readMAC() {
         byte[] mac = new byte[MAC_SIZE * PAGE_SIZE];
         utils.readPages(PAGE_MAC, MAC_SIZE, mac, 0);
         return mac;
     }
 
+    /*
+    * Return int value of counter
+    * */
     private int readCounter() {
         byte[] counter = new byte[COUNTER_SIZE * PAGE_SIZE];
         utils.readPages(PAGE_COUNTER, COUNTER_SIZE, counter, 0);
@@ -313,13 +339,13 @@ public class Ticket {
      * Issue new tickets
      * <p>
      * 1. Check for app tag, if present, authenticate with unique key and write
-     * if different, reject card
-     * if not present, initialize (write new key)
+     *  if different, reject card
+     *  if not present, initialize (write new key)
      * 2. Check safe limits
      * 3. On first issue, activation date should be blank;
-     * if topping up rides, activation should be reset to 0 so
-     * that in use() we can use the field to understand whether the ticket
-     * is to be activated or already in use
+     *  if topping up rides, activation should be reset to 0 so
+     *  that in use() we can use the field to understand whether the ticket
+     *  is to be activated or already in use
      * 4. update issuing timestamp
      * 5. MAC info
      */
@@ -332,7 +358,7 @@ public class Ticket {
         byte[] read = new byte[8];
         utils.readPages(PAGE_APP_TAG, APP_TAG_SIZE, read, 0);
         String appTag = new String(read);
-        System.out.println("++++++       read tag: " + appTag);
+        Utilities.log("[+] Read card with APP TAG: " + appTag, false);
 
         if (!appTag.equals(CURRENT_APP_VERSION)) {
             // foreign card, reject it
@@ -351,7 +377,7 @@ public class Ticket {
 
         if (currentCounter == 0) {
             // card's a new one, init counter, limit, key and continue
-            // FOR SECURITY, WRITE CURRENT COUNTER VALUE TO LIMIT VALUE
+            // for security, ensure limit counter value starts from counter value
             init = utils.readPages(PAGE_COUNTER, COUNTER_SIZE, buff, 0);
 
             init = init && utils.writePages(intToByteArray(0), 0, PAGE_COUNTER, COUNTER_SIZE);
@@ -368,18 +394,22 @@ public class Ticket {
             utils.readPages(PAGE_RIDE_LIMIT_COUNTER, COUNTER_SIZE, buff, 0);
             currentLimit = byteArrayToInt(buff);
 
+            // safe limits check
             if ((currentCounter + TICKET_USES > MAX_COUNTER_VALUE) &&
                     (currentLimit - currentCounter + TICKET_USES < MAX_RIDES_ALLOWED)) {
                 Utilities.log("Safe limits exceeded, aborting...", true);
-                throw new GeneralSecurityException("Counter value exceeds! try New Card");
+                throw new GeneralSecurityException("Counter value exceeds! Try new card");
             }
         }
 
+        // fill in static data structure, MAC and prepare for first use
         byte[] commonData = generateCommonData(currentCounter, currentLimit, TICKET_USES);
         byte[] mac = macAlgorithm.generateMac(commonData);
 
         res = utils.writePages(commonData, 0, PAGE_APP_TAG, COMMON_DATA_SIZE);
         res = res && utils.writePages(mac, 0, PAGE_MAC, MAC_SIZE);
+
+        // read protect card
         utils.writePages(intToByteArray(AUTH0_START_ADDRESS), 0, PAGE_AUTH0, 1);
         utils.writePages(intToByteArray(AUTH1_MODE), 0, PAGE_AUTH1, 1);
 
@@ -394,13 +424,14 @@ public class Ticket {
 
     /**
      * Use ticket once
-     * <p>
-     * TODO: IMPLEMENT
+     * Check for integrity, safe limits, and last successful read
      */
     public boolean use() throws GeneralSecurityException {
         int currentTime = (int) ((new Date()).getTime() / 1000 / 60);
         byte[] uid = readUID();
 
+        // check for past successful reads so as to provide idempotent double read
+        // and pass-back protection
         TicketSuccessfulReadHistory uidHistory = TicketSuccessfulReadHistory.
                 successfulReadHistoryList.get(ByteBuffer.wrap(uid));
         if (uidHistory != null && !uidHistory.isExpired()) {
@@ -409,6 +440,7 @@ public class Ticket {
             return false;
         }
 
+        // authenticate card
         byte[] key = generateAuthKey(uid, MASTER_SECRET);
         boolean authResult = utils.authenticate(key);
 
@@ -417,6 +449,7 @@ public class Ticket {
             return false;
         }
 
+        // pull static data
         byte[] commonData = readCommonData();
 
         // Validate
@@ -425,7 +458,7 @@ public class Ticket {
             boolean res = true;
 
             if (this.pastCounter == this.currentCounter) {
-                // first use
+                // first use, so update activation TS in common data structure and rewrite mac
                 System.arraycopy(intToByteArray(currentTime), 0, commonData,
                         (COMMON_DATA_SIZE - TS_SIZE) * PAGE_SIZE, TS_SIZE * PAGE_SIZE);
                 byte[] mac = macAlgorithm.generateMac(commonData);
@@ -435,6 +468,7 @@ public class Ticket {
                 res = res && utils.writePages(mac, 0, PAGE_MAC, MAC_SIZE);
             }
 
+            // ticket used, update counter of rides
             res = res && utils.writePages(intToByteArray(1), 0, PAGE_COUNTER,
                     COUNTER_SIZE);
 
