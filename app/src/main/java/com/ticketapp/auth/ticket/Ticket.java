@@ -151,13 +151,15 @@ public class Ticket {
                 calculatedMAC = Arrays.copyOfRange(generateMac(uid, commonData), 0,
                         MAC_SIZE * PAGE_SIZE);
 
+                // ticket has been tampered with, reject
                 if (!Arrays.equals(calculatedMAC, cardMAC)) {
                     this.isValid = false;
                     failureReason = "MAC mismatch";
                     return;
                 }
             } else {
-                // ticket has been tampered with
+                // suspicious mac mismatch.
+                // no recovery needed, just reject
                 this.isValid = false;
                 failureReason = "MAC mismatch";
                 return;
@@ -398,6 +400,7 @@ public class Ticket {
         if (currentCounter == 0) {
             // card's a new one, init counter, limit, key and continue
             // for security, ensure limit counter value starts from counter value
+
             init = utils.readPages(PAGE_COUNTER, COUNTER_SIZE, buff, 0);
 
             init = init && utils.writePages(intToByteArray(0), 0, PAGE_COUNTER, COUNTER_SIZE);
@@ -490,16 +493,19 @@ public class Ticket {
 
             if (this.pastCounter == this.currentCounter) {
                 // first use, so update activation TS in common data structure and rewrite mac
+
                 System.arraycopy(intToByteArray(currentTime), 0, commonData,
                         (COMMON_DATA_SIZE - TS_SIZE) * PAGE_SIZE, TS_SIZE * PAGE_SIZE);
                 byte[] mac = generateMac(uid, commonData);
 
                 res = utils.writePages(intToByteArray(currentTime), 0, PAGE_ACTIVATION_TS,
                         TS_SIZE);
+                // tearing can happen here
                 res = res && utils.writePages(mac, 0, PAGE_MAC, MAC_SIZE);
             }
 
             // ticket used, update counter of rides
+            // tearing can happen here
             res = res && utils.writePages(intToByteArray(1), 0, PAGE_COUNTER,
                     COUNTER_SIZE);
 
