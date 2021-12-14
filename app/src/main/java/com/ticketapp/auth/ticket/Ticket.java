@@ -257,11 +257,13 @@ public class Ticket {
      * - Issuing TS
      * - First use TS
      */
-    public static byte[] generateCommonData(int currentCounter, int counterLimit, int uses, int issueTS, boolean expired) {
-        // int issueTS = (int) ((new Date()).getTime() / 1000 / 60);
+    public static byte[] generateCommonData(int currentCounter, int counterLimit, int uses, int issueTS, boolean isExpired) {
         int newCounterLimit;
 
-        if (counterLimit < currentCounter) {
+        /*
+         * setting available rides to uses when the card is new or is expired or has no more available ride left
+         */
+        if (currentCounter == 0 || isExpired || counterLimit < currentCounter) {
             newCounterLimit = currentCounter + uses;
         } else {
             newCounterLimit = counterLimit + uses;
@@ -295,8 +297,8 @@ public class Ticket {
     }
 
     /*
-    * Return activation TS on card
-    * */
+     * Return activation TS on card
+     * */
     private int readActivationTS() {
         byte[] ts = new byte[TS_SIZE * PAGE_SIZE];
         utils.readPages(PAGE_ACTIVATION_TS, TS_SIZE, ts, 0);
@@ -427,10 +429,10 @@ public class Ticket {
         int currentTime = (int) ((new Date()).getTime() / 1000 / 60);
 
         // check if card is still valid or expired
-        boolean isExpired = (activationTS + MINUTES_VALID) < currentTime;
+        boolean isExpired = activationTS != 0 && (activationTS + MINUTES_VALID) < currentTime;
 
         // fill in static data structure, MAC and prepare for first use
-        byte[] commonData = generateCommonData(currentCounter, currentLimit, TICKET_USES, currentTime, true);
+        byte[] commonData = generateCommonData(currentCounter, currentLimit, TICKET_USES, currentTime, isExpired);
         byte[] mac = generateMac(uid, commonData);
 
         res = utils.writePages(commonData, 0, PAGE_APP_TAG, COMMON_DATA_SIZE);
