@@ -10,6 +10,7 @@ import java.nio.ByteOrder;
 import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.text.DateFormat;
 import java.util.Arrays;
 import java.util.Date;
 
@@ -512,8 +513,19 @@ public class Ticket {
             // Set information to show for the user
             if (res) {
                 this.remainingUses--;
+
+
+                /*LocalDateTime ldt = Instant.ofEpochMilli(System.currentTimeMillis())
+                        .atZone(ZoneId.systemDefault())
+                        .toLocalDateTime();
+                String expiryDate = ldt.format(DateTimeFormatter.ofPattern("E d, LLL"));*/
+
+                // produce expiry date in format "Dec 26, 2021"
+                Date expiry = new Date((long) expiryTime * 60 * 1000);
+                String fmt = DateFormat.getDateInstance().format(expiry);
+
                 infoToShow = "Ticket used!\nAvailable rides: " +
-                        this.remainingUses + "\nExpiry time: " + new Date((long) expiryTime * 60 * 1000);
+                        this.remainingUses + "\nExpiry date: " + fmt;
                 new TicketSuccessfulReadHistory(uid);
                 return true;
             } else {
